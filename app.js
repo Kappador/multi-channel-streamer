@@ -2,7 +2,7 @@ const vorpal = require("vorpal")();
 const fs = require("fs");
 const { RtmpStream } = require("@magicfun1241/streamer");
 let chalk = vorpal.chalk;
-let request = require("request");
+let axios = require("axios");
 
 let streams = [];
 
@@ -162,7 +162,7 @@ vorpal
 
 vorpal
   .command("streams")
-  .description("List all the streams")
+  .description("List all the local running streams")
   .action(async function (args, callback) {
     streams.forEach((stream) => {
       const now = new Date().getTime();
@@ -212,7 +212,7 @@ vorpal
 
 vorpal
   .command("check")
-  .description("Checks if a stream or all streams are running")
+  .description("Checks if twitch recognizes the streams as running")
   .action(async function (args, cb) {
     const choices = streams
       .map((stream) => {
@@ -230,51 +230,115 @@ vorpal
       },
     ]);
 
-    // forget this for now lol
-
     const channel = result.channel;
 
-    const header = {
-      "Client-ID": "cm3ds5bjofq9lhr9hl5135bc1nfrxj",
-    };
     if (channel === "All") {
       streams.forEach(async (LocalStream) => {
-        const url = `https://api.twitch.tv/helix/streams?user_login=${LocalStream.channel.name}`;
-        const response = await request(url, {
-          headers: header,
+        checkIfLiveAndViewCount(LocalStream.channel.name).then((result) => {
+          if (result.stream_id) {
+            this.log(
+              chalk.green(
+                `${LocalStream.channel.name} is streaming with ${result.viewers} viewers`
+              )
+            );
+          } else {
+            this.log(chalk.red(`${LocalStream.channel.name} is not streaming`));
+          }
         });
-        const json = await response.json();
-        console.log(json)
-        if (json.data.length === 0) {
-          this.log(chalk.red(`${LocalStream.channel.name} is not streaming`));
-        } else {
-          this.log(chalk.green(`${LocalStream.channel.name} is streaming`));
-        }
       });
     } else {
       streams.forEach(async (LocalStream) => {
         if (LocalStream.channel.name === channel) {
-          const usersURL =
-            "https://api.twitch.tv/kraken/users?login=" +
-            LocalStream.channel.name;
-          const firstReq = await request.get(usersURL).set(header);
-          const { users } = firstReq.body;
-          const { _id: id } = users[0],
-            streamsURL = "https://api.twitch.tv/kraken/streams/" + id;
-
-          const streamResponse = await request.get(streamsURL).set(header);
-
-          const stream = JSON.parse(streamResponse.text).stream;
-          if (stream) {
-            this.log(
-              `${stream.channel.name} is streaming since ${stream.created_at} and has ${stream.viewers} viewers`
-            );
-          } else {
-            this.log(`${stream.channel.name} is not streaming`);
-          }
+          checkIfLiveAndViewCount(LocalStream.channel.name).then((result) => {
+            if (result.stream_id) {
+              this.log(
+                chalk.green(
+                  `${LocalStream.channel.name} is streaming with ${result.viewers} viewers`
+                )
+              );
+            } else {
+              this.log(
+                chalk.red(`${LocalStream.channel.name} is not streaming`)
+              );
+            }
+          });
         }
       });
     }
   });
+function getTwitchHeader() {
+  const header = {
+    Accept: "*/*",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Accept-Language": "en-US",
+    Authorization: "undefined",
+    "Client-ID": "kimne78kx3ncx6brgo4mv6wki5h1ko",
+    Connection: "keep-alive",
+    "Content-Type": "text/plain; charset=UTF-8",
+    "Device-ID": "pkXjq7q8Qownz1owUogMDR9xKbxiCrC2",
+    Origin: "https://www.twitch.tv",
+    Referer: "https://www.twitch.tv/",
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-site",
+    "Sec-GPC": "1",
+    "User-Agent":
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/103.0.5060.114 Safari/537.36",
+  };
+  return header;
+}
+async function checkIfLiveAndViewCount(channel) {
+  return new Promise((resolve, reject) => {
+    axios
+      .post(
+        "https://gql.twitch.tv/gql",
+        [
+          {
+            operationName: "UseLive",
+            variables: {
+              channelLogin: channel,
+            },
+            extensions: {
+              persistedQuery: {
+                version: 1,
+                sha256Hash:
+                  "639d5f11bfb8bf3053b424d9ef650d04c4ebb7d94711d644afb08fe9a0fad5d9",
+              },
+            },
+          },
+          {
+            operationName: "UseViewCount",
+            variables: {
+              channelLogin: channel,
+            },
+            extensions: {
+              persistedQuery: {
+                version: 1,
+                sha256Hash:
+                  "00b11c9c428f79ae228f30080a06ffd8226a1f068d6f52fbc057cbde66e994c2",
+              },
+            },
+          },
+        ],
+        {
+          headers: getTwitchHeader(),
+        }
+      )
+      .then((response) => {
+        if (!response.data[0].data.user.stream)
+          return resolve({ stream_id: null });
+
+        resolve({
+          stream_id: response.data[0].data.user.stream.id,
+          channel_id: response.data[0].data.user.id,
+          channel_name: response.data[0].data.user.login,
+          streamingSince:
+            new Date(response.data[0].data.user.stream.createdAt).getTime() /
+            1000,
+          viewers: response.data[1].data.user.stream.viewersCount,
+        });
+      });
+  });
+}
 
 vorpal.delimiter("multistreamer$").show();
